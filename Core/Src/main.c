@@ -190,7 +190,7 @@ int main(void) {
         memcpy(shared_tx_data, &packet0X02, 8);
         send(PACKET2_CAN_ID, 8);
 
-        memcpy(shared_tx_data, &packet0X03, 8);
+        memcpy(shared_tx_data, &packet0X03, 5);
         send(PACKET3_CAN_ID, 5);
 
         HAL_Delay(1);
