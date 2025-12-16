@@ -2,7 +2,10 @@
 
 This board will receive ch0x0 imu data through UART and then forward it into the CAN network using three packets.
 
-The baud rate of the CH0X0 IMU is 921600, using Hi92 protocol at 1 kHz.
+The **baud rate** of the CH0X0 IMU is **921600**, using **Hi92** protocol at **1 kHz**.
+
+If the board is not working, use the **CHCenter Tool** (the version in the repo, do **not** update) to check the
+settings of HIPNUC CH0X0 IMU through your USB2UART converter first!
 
 The forward result includes three packets, two packets of length 8, 1 packet of length 5, defined as follows:
 
