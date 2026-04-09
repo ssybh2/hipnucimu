@@ -71,6 +71,22 @@ struct packet_0x02_t packet0X02;
 struct packet_0x03_t packet0X03;
 FDCAN_TxHeaderTypeDef shared_tx_header;
 uint8_t shared_tx_data[8];
+FDCAN_ProtocolStatusTypeDef status;
+
+void can_filter_init(void) {
+    FDCAN_FilterTypeDef can_filter_st;
+    can_filter_st.IdType = FDCAN_STANDARD_ID;
+    can_filter_st.FilterIndex = 0;
+    can_filter_st.FilterType = FDCAN_FILTER_MASK;
+    can_filter_st.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
+    can_filter_st.FilterID1 = 0x00000000;
+    can_filter_st.FilterID2 = 0x00000000;
+
+    HAL_FDCAN_ConfigFilter(&hfdcan1, &can_filter_st);
+    HAL_FDCAN_ConfigGlobalFilter(&hfdcan1, FDCAN_REJECT, FDCAN_REJECT, FDCAN_FILTER_REMOTE, FDCAN_FILTER_REMOTE);
+    HAL_FDCAN_ActivateNotification(&hfdcan1, FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0);
+    HAL_FDCAN_Start(&hfdcan1);
+}
 
 void send(uint32_t packet_id, int8_t length) {
     shared_tx_header.IdType = FDCAN_STANDARD_ID;
@@ -82,7 +98,16 @@ void send(uint32_t packet_id, int8_t length) {
     shared_tx_header.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
     shared_tx_header.MessageMarker = 0;
     shared_tx_header.Identifier = packet_id;
-    HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &shared_tx_header, shared_tx_data);
+
+    if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &shared_tx_header, shared_tx_data) != HAL_OK) {
+        HAL_FDCAN_GetProtocolStatus(&hfdcan1, &status);
+        if (status.BusOff) {
+            HAL_FDCAN_DeactivateNotification(&hfdcan1, FDCAN_IT_RX_FIFO0_NEW_MESSAGE);
+            HAL_FDCAN_DeInit(&hfdcan1);
+            MX_FDCAN1_Init();
+            can_filter_init();
+        }
+    }
 }
 
 void update_imu() {
@@ -118,21 +143,6 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
         memset(&buf, 0, sizeof(buf));
         HAL_UARTEx_ReceiveToIdle_DMA(&huart2, buf, 82);
     }
-}
-
-void can_filter_init(void) {
-    FDCAN_FilterTypeDef can_filter_st;
-    can_filter_st.IdType = FDCAN_STANDARD_ID;
-    can_filter_st.FilterIndex = 0;
-    can_filter_st.FilterType = FDCAN_FILTER_MASK;
-    can_filter_st.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
-    can_filter_st.FilterID1 = 0x00000000;
-    can_filter_st.FilterID2 = 0x00000000;
-
-    HAL_FDCAN_ConfigFilter(&hfdcan1, &can_filter_st);
-    HAL_FDCAN_ConfigGlobalFilter(&hfdcan1, FDCAN_REJECT, FDCAN_REJECT, FDCAN_FILTER_REMOTE, FDCAN_FILTER_REMOTE);
-    HAL_FDCAN_ActivateNotification(&hfdcan1, FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0);
-    HAL_FDCAN_Start(&hfdcan1);
 }
 
 /* USER CODE END 0 */
