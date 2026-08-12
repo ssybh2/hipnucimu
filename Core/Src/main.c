@@ -49,6 +49,7 @@
 #define PACKET1_CAN_ID 0x01
 #define PACKET2_CAN_ID 0x02
 #define PACKET3_CAN_ID 0x03
+#define PACKET_PERIOD 1
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -66,6 +67,7 @@ void SystemClock_Config(void);
 #define I2(p) (*((int16_t *)(p)))
 
 uint8_t buf[82];
+uint32_t last_send_tick = 0;
 struct packet_0x01_t packet0X01;
 struct packet_0x02_t packet0X02;
 struct packet_0x03_t packet0X03;
@@ -124,6 +126,18 @@ void update_imu() {
     packet0X03.gyroy = I2(buf+6+12);
     packet0X03.gyroz = I2(buf+6+14);
     packet0X03.temperature = I1(buf+6+3);
+
+    if (HAL_GetTick() - last_send_tick >= PACKET_PERIOD) {
+        memcpy(shared_tx_data, &packet0X01, 8);
+        send(PACKET1_CAN_ID, 8);
+
+        memcpy(shared_tx_data, &packet0X02, 8);
+        send(PACKET2_CAN_ID, 8);
+
+        memcpy(shared_tx_data, &packet0X03, 5);
+        send(PACKET3_CAN_ID, 5);
+    }
+    last_send_tick = HAL_GetTick();
 }
 
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
@@ -194,16 +208,6 @@ int main(void) {
         /* USER CODE END WHILE */
 
         /* USER CODE BEGIN 3 */
-        memcpy(shared_tx_data, &packet0X01, 8);
-        send(PACKET1_CAN_ID, 8);
-
-        memcpy(shared_tx_data, &packet0X02, 8);
-        send(PACKET2_CAN_ID, 8);
-
-        memcpy(shared_tx_data, &packet0X03, 5);
-        send(PACKET3_CAN_ID, 5);
-
-        HAL_Delay(1);
     }
     /* USER CODE END 3 */
 }
