@@ -46,9 +46,37 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
+
+/*
+ * Three ID slots are enough for six IMUs because CAN1 and CAN2 are independent
+ * buses and may reuse the same identifiers.
+ *
+ * SLOT 1: 0x01 / 0x02 / 0x03
+ * SLOT 2: 0x04 / 0x05 / 0x06
+ * SLOT 3: 0x07 / 0x08 / 0x09
+ *
+ * The CMake build creates one firmware image for each slot. If no build-time
+ * slot is specified, SLOT 1 is used for backwards compatibility.
+ */
+#ifndef HIPNUC_IMU_SLOT
+#define HIPNUC_IMU_SLOT 1
+#endif
+
+#if HIPNUC_IMU_SLOT == 1
 #define PACKET1_CAN_ID 0x01
 #define PACKET2_CAN_ID 0x02
 #define PACKET3_CAN_ID 0x03
+#elif HIPNUC_IMU_SLOT == 2
+#define PACKET1_CAN_ID 0x04
+#define PACKET2_CAN_ID 0x05
+#define PACKET3_CAN_ID 0x06
+#elif HIPNUC_IMU_SLOT == 3
+#define PACKET1_CAN_ID 0x07
+#define PACKET2_CAN_ID 0x08
+#define PACKET3_CAN_ID 0x09
+#else
+#error "HIPNUC_IMU_SLOT must be 1, 2 or 3"
+#endif
 
 /* 2 ms period = 500 Hz forwarding rate */
 #define PACKET_PERIOD 2
@@ -329,7 +357,7 @@ void Error_Handler(void) {
   * @brief  Reports the name of the source file and the source line number
   *         where the assert_param error has occurred.
   * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
+  * @param  line: assert error line number
   * @retval None
   */
 void assert_failed(uint8_t *file, uint32_t line) {
