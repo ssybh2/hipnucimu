@@ -49,7 +49,13 @@
 #define PACKET1_CAN_ID 0x01
 #define PACKET2_CAN_ID 0x02
 #define PACKET3_CAN_ID 0x03
-#define PACKET_PERIOD 1
+
+/* 2 ms period = 500 Hz forwarding rate */
+#define PACKET_PERIOD 2
+
+/* Minimum bytes required by update_imu() (highest accessed byte is 53). */
+#define IMU_MIN_FRAME_SIZE 54
+#define IMU_RX_BUFFER_SIZE 82
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -66,7 +72,7 @@ void SystemClock_Config(void);
 #define I1(p) (*((int8_t *)(p)))
 #define I2(p) (*((int16_t *)(p)))
 
-uint8_t buf[82];
+uint8_t buf[IMU_RX_BUFFER_SIZE];
 uint32_t last_send_tick = 0;
 struct packet_0x01_t packet0X01;
 struct packet_0x02_t packet0X02;
@@ -74,6 +80,13 @@ struct packet_0x03_t packet0X03;
 FDCAN_TxHeaderTypeDef shared_tx_header;
 uint8_t shared_tx_data[8];
 FDCAN_ProtocolStatusTypeDef status;
+
+/* Debug counters: inspect these in CubeIDE if CAN forwarding is unstable. */
+volatile uint32_t can_tx_ok_count = 0;
+volatile uint32_t can_tx_fail_count = 0;
+volatile uint32_t can_busoff_recovery_count = 0;
+volatile uint32_t uart_frame_count = 0;
+volatile uint32_t uart_short_frame_count = 0;
 
 void can_filter_init(void) {
     FDCAN_FilterTypeDef can_filter_st;
@@ -90,7 +103,7 @@ void can_filter_init(void) {
     HAL_FDCAN_Start(&hfdcan1);
 }
 
-void send(uint32_t packet_id, int8_t length) {
+uint8_t send(uint32_t packet_id, int8_t length) {
     shared_tx_header.IdType = FDCAN_STANDARD_ID;
     shared_tx_header.TxFrameType = FDCAN_DATA_FRAME;
     shared_tx_header.DataLength = length;
@@ -101,18 +114,32 @@ void send(uint32_t packet_id, int8_t length) {
     shared_tx_header.MessageMarker = 0;
     shared_tx_header.Identifier = packet_id;
 
-    if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &shared_tx_header, shared_tx_data) != HAL_OK) {
-        HAL_FDCAN_GetProtocolStatus(&hfdcan1, &status);
-        if (status.BusOff) {
-            HAL_FDCAN_DeactivateNotification(&hfdcan1, FDCAN_IT_RX_FIFO0_NEW_MESSAGE);
-            HAL_FDCAN_DeInit(&hfdcan1);
-            MX_FDCAN1_Init();
-            can_filter_init();
-        }
+    if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &shared_tx_header, shared_tx_data) == HAL_OK) {
+        can_tx_ok_count++;
+        return 1;
     }
+
+    can_tx_fail_count++;
+    HAL_FDCAN_GetProtocolStatus(&hfdcan1, &status);
+    if (status.BusOff) {
+        can_busoff_recovery_count++;
+        HAL_FDCAN_DeactivateNotification(&hfdcan1, FDCAN_IT_RX_FIFO0_NEW_MESSAGE);
+        HAL_FDCAN_DeInit(&hfdcan1);
+        MX_FDCAN1_Init();
+        can_filter_init();
+    }
+
+    return 0;
 }
 
-void update_imu() {
+void update_imu(void) {
+    const uint32_t now = HAL_GetTick();
+
+    /* Do not enqueue another three-frame sample before the 2 ms period expires. */
+    if (now - last_send_tick < PACKET_PERIOD) {
+        return;
+    }
+
     packet0X01.q0 = I2(buf+6+40);
     packet0X01.q1 = I2(buf+6+42);
     packet0X01.q2 = I2(buf+6+44);
@@ -127,35 +154,41 @@ void update_imu() {
     packet0X03.gyroz = I2(buf+6+14);
     packet0X03.temperature = I1(buf+6+3);
 
-    if (HAL_GetTick() - last_send_tick >= PACKET_PERIOD) {
-        memcpy(shared_tx_data, &packet0X01, 8);
-        send(PACKET1_CAN_ID, 8);
+    memcpy(shared_tx_data, &packet0X01, 8);
+    send(PACKET1_CAN_ID, 8);
 
-        memcpy(shared_tx_data, &packet0X02, 8);
-        send(PACKET2_CAN_ID, 8);
+    memcpy(shared_tx_data, &packet0X02, 8);
+    send(PACKET2_CAN_ID, 8);
 
-        memcpy(shared_tx_data, &packet0X03, 5);
-        send(PACKET3_CAN_ID, 5);
-    }
-    last_send_tick = HAL_GetTick();
+    memcpy(shared_tx_data, &packet0X03, 5);
+    send(PACKET3_CAN_ID, 5);
+
+    /* Update the limiter only when a forwarding attempt is actually made. */
+    last_send_tick = now;
 }
 
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
-    if (huart->Instance == USART2) {
-        if (Size <= 82) {
-            HAL_UARTEx_ReceiveToIdle_DMA(&huart2, buf, 82);
-            update_imu();
-        } else {
-            memset(&buf, 0, sizeof(buf));
-            HAL_UARTEx_ReceiveToIdle_DMA(&huart2, buf, 82);
-        }
+    if (huart->Instance != USART2) {
+        return;
     }
+
+    if (Size >= IMU_MIN_FRAME_SIZE && Size <= IMU_RX_BUFFER_SIZE) {
+        uart_frame_count++;
+
+        /* Parse first while DMA is stopped by ReceiveToIdle, then arm DMA again. */
+        update_imu();
+    } else {
+        uart_short_frame_count++;
+        memset(buf, 0, sizeof(buf));
+    }
+
+    HAL_UARTEx_ReceiveToIdle_DMA(&huart2, buf, IMU_RX_BUFFER_SIZE);
 }
 
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART2) {
-        memset(&buf, 0, sizeof(buf));
-        HAL_UARTEx_ReceiveToIdle_DMA(&huart2, buf, 82);
+        memset(buf, 0, sizeof(buf));
+        HAL_UARTEx_ReceiveToIdle_DMA(&huart2, buf, IMU_RX_BUFFER_SIZE);
     }
 }
 
@@ -197,7 +230,7 @@ int main(void) {
     HAL_Delay(300);
     HAL_GPIO_WritePin(IMU_RST_GPIO_Port, IMU_RST_Pin, GPIO_PIN_RESET);
     HAL_Delay(500);
-    HAL_UARTEx_ReceiveToIdle_DMA(&huart2, buf, 82);
+    HAL_UARTEx_ReceiveToIdle_DMA(&huart2, buf, IMU_RX_BUFFER_SIZE);
     HAL_GPIO_WritePin(IMU_RST_GPIO_Port, IMU_RST_Pin, GPIO_PIN_SET);
     HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
     /* USER CODE END 2 */
