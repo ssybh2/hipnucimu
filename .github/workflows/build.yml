@@ -1,9 +1,10 @@
-name: Build Firmware
+name: Build 6-IMU Firmware
 
 on:
   push:
-    branches: [ "main", "feature/6imu-500hz-stable" ]
-  pull_request:
+    branches:
+      - "feature/6imu-500hz-stable"
+  workflow_dispatch:
 
 jobs:
   build:
@@ -20,7 +21,7 @@ jobs:
 
       - name: Configure CMake
         run: |
-          cmake -DCMAKE_BUILD_TYPE=Release \
+          cmake -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -S ${{ github.workspace }} \
             -B ${{ github.workspace }}/build/Release
 
