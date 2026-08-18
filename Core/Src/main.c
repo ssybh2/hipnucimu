@@ -63,27 +63,34 @@
 #endif
 
 #if HIPNUC_IMU_SLOT == 1
-#define PACKET1_CAN_ID 0x01
-#define PACKET2_CAN_ID 0x02
-#define PACKET3_CAN_ID 0x03
+#define PACKET1_CAN_ID 0x01U
+#define PACKET2_CAN_ID 0x02U
+#define PACKET3_CAN_ID 0x03U
 #elif HIPNUC_IMU_SLOT == 2
-#define PACKET1_CAN_ID 0x04
-#define PACKET2_CAN_ID 0x05
-#define PACKET3_CAN_ID 0x06
+#define PACKET1_CAN_ID 0x04U
+#define PACKET2_CAN_ID 0x05U
+#define PACKET3_CAN_ID 0x06U
 #elif HIPNUC_IMU_SLOT == 3
-#define PACKET1_CAN_ID 0x07
-#define PACKET2_CAN_ID 0x08
-#define PACKET3_CAN_ID 0x09
+#define PACKET1_CAN_ID 0x07U
+#define PACKET2_CAN_ID 0x08U
+#define PACKET3_CAN_ID 0x09U
 #else
 #error "HIPNUC_IMU_SLOT must be 1, 2 or 3"
 #endif
 
-/* 2 ms period = 500 Hz forwarding rate */
-#define PACKET_PERIOD 2
+/* Effective forwarding period: 2 ms = 500 Hz. */
+#define PACKET_PERIOD_MS 2U
 
-/* Minimum bytes required by update_imu() (highest accessed byte is 53). */
-#define IMU_MIN_FRAME_SIZE 54
-#define IMU_RX_BUFFER_SIZE 82
+/* HiPNUC binary frame outer format: SOF(2) + LEN(2) + CRC(2) + payload. */
+#define HIPNUC_SOF0 0x5AU
+#define HIPNUC_SOF1 0xA5U
+#define HIPNUC_HI92_TAG 0x92U
+#define HIPNUC_FRAME_OVERHEAD 6U
+#define IMU_RX_BUFFER_SIZE 82U
+
+/* One logical IMU sample is always forwarded as exactly three CAN frames. */
+#define IMU_CAN_FRAMES_PER_SAMPLE 3U
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -96,10 +103,6 @@ void SystemClock_Config(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-#define U1(p) (*((uint8_t *)(p)))
-#define I1(p) (*((int8_t *)(p)))
-#define I2(p) (*((int16_t *)(p)))
-
 uint8_t buf[IMU_RX_BUFFER_SIZE];
 uint32_t last_send_tick = 0;
 struct packet_0x01_t packet0X01;
@@ -109,12 +112,102 @@ FDCAN_TxHeaderTypeDef shared_tx_header;
 uint8_t shared_tx_data[8];
 FDCAN_ProtocolStatusTypeDef status;
 
-/* Debug counters: inspect these in CubeIDE if CAN forwarding is unstable. */
+/* CAN diagnostics: inspect these in CubeIDE during stress tests. */
 volatile uint32_t can_tx_ok_count = 0;
 volatile uint32_t can_tx_fail_count = 0;
+volatile uint32_t can_tx_group_ok_count = 0;
+volatile uint32_t can_tx_group_deferred_count = 0;
+volatile uint32_t can_tx_group_partial_fail_count = 0;
 volatile uint32_t can_busoff_recovery_count = 0;
+
+/* UART / protocol diagnostics. */
+volatile uint32_t uart_rx_event_count = 0;
 volatile uint32_t uart_frame_count = 0;
 volatile uint32_t uart_short_frame_count = 0;
+volatile uint32_t uart_header_error_count = 0;
+volatile uint32_t uart_length_error_count = 0;
+volatile uint32_t uart_crc_error_count = 0;
+volatile uint32_t uart_tag_error_count = 0;
+volatile uint32_t uart_half_transfer_event_count = 0;
+volatile uint32_t uart_dma_restart_error_count = 0;
+volatile uint32_t uart_rate_limited_count = 0;
+
+static int16_t read_i16_le(const uint8_t *p) {
+    const uint16_t value = (uint16_t)p[0] | ((uint16_t)p[1] << 8U);
+    return (int16_t)value;
+}
+
+/* CRC-16/XMODEM: polynomial 0x1021, init 0x0000, no reflection/xorout. */
+static uint16_t crc16_xmodem_update(uint16_t crc, const uint8_t *src, uint16_t length) {
+    for (uint16_t j = 0; j < length; ++j) {
+        crc ^= (uint16_t)src[j] << 8U;
+        for (uint8_t i = 0; i < 8U; ++i) {
+            if ((crc & 0x8000U) != 0U) {
+                crc = (uint16_t)((crc << 1U) ^ 0x1021U);
+            } else {
+                crc = (uint16_t)(crc << 1U);
+            }
+        }
+    }
+    return crc;
+}
+
+static uint8_t validate_hi92_frame(const uint16_t size) {
+    if (size < (HIPNUC_FRAME_OVERHEAD + 1U) || size > IMU_RX_BUFFER_SIZE) {
+        uart_short_frame_count++;
+        return 0U;
+    }
+
+    if (buf[0] != HIPNUC_SOF0 || buf[1] != HIPNUC_SOF1) {
+        uart_header_error_count++;
+        return 0U;
+    }
+
+    const uint16_t payload_len = (uint16_t)buf[2] | ((uint16_t)buf[3] << 8U);
+    if ((uint32_t)payload_len + HIPNUC_FRAME_OVERHEAD != size) {
+        uart_length_error_count++;
+        return 0U;
+    }
+
+    if (payload_len == 0U || payload_len > (IMU_RX_BUFFER_SIZE - HIPNUC_FRAME_OVERHEAD)) {
+        uart_length_error_count++;
+        return 0U;
+    }
+
+    const uint16_t received_crc = (uint16_t)buf[4] | ((uint16_t)buf[5] << 8U);
+    uint16_t calculated_crc = 0U;
+
+    /* CRC covers SOF + LEN and payload, but excludes the two CRC bytes. */
+    calculated_crc = crc16_xmodem_update(calculated_crc, buf, 4U);
+    calculated_crc = crc16_xmodem_update(calculated_crc, buf + HIPNUC_FRAME_OVERHEAD, payload_len);
+
+    if (calculated_crc != received_crc) {
+        uart_crc_error_count++;
+        return 0U;
+    }
+
+    /* This firmware uses the fixed offsets of the legacy HI92 payload. */
+    if (buf[HIPNUC_FRAME_OVERHEAD] != HIPNUC_HI92_TAG) {
+        uart_tag_error_count++;
+        return 0U;
+    }
+
+    return 1U;
+}
+
+static void start_imu_rx_dma(void) {
+    if (HAL_UARTEx_ReceiveToIdle_DMA(&huart2, buf, IMU_RX_BUFFER_SIZE) != HAL_OK) {
+        uart_dma_restart_error_count++;
+        return;
+    }
+
+    /* ReceiveToIdle DMA normally also generates a Half-Transfer callback at
+     * 41 bytes. That is not a complete 82-byte HI92 frame and must never be
+     * parsed or used to restart the DMA reception. */
+    if (huart2.hdmarx != NULL) {
+        __HAL_DMA_DISABLE_IT(huart2.hdmarx, DMA_IT_HT);
+    }
+}
 
 void can_filter_init(void) {
     FDCAN_FilterTypeDef can_filter_st;
@@ -131,10 +224,10 @@ void can_filter_init(void) {
     HAL_FDCAN_Start(&hfdcan1);
 }
 
-uint8_t send(uint32_t packet_id, int8_t length) {
+uint8_t send(uint32_t packet_id, uint32_t data_length) {
     shared_tx_header.IdType = FDCAN_STANDARD_ID;
     shared_tx_header.TxFrameType = FDCAN_DATA_FRAME;
-    shared_tx_header.DataLength = length;
+    shared_tx_header.DataLength = data_length;
     shared_tx_header.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
     shared_tx_header.BitRateSwitch = FDCAN_BRS_OFF;
     shared_tx_header.FDFormat = FDCAN_CLASSIC_CAN;
@@ -144,7 +237,7 @@ uint8_t send(uint32_t packet_id, int8_t length) {
 
     if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &shared_tx_header, shared_tx_data) == HAL_OK) {
         can_tx_ok_count++;
-        return 1;
+        return 1U;
     }
 
     can_tx_fail_count++;
@@ -157,42 +250,66 @@ uint8_t send(uint32_t packet_id, int8_t length) {
         can_filter_init();
     }
 
-    return 0;
+    return 0U;
+}
+
+static uint8_t enqueue_complete_can_sample(void) {
+    /* The STM32G431 FDCAN implementation has exactly three Tx FIFO/Queue
+     * elements, and one IMU sample requires exactly three CAN frames.
+     * Never start a sample unless all three slots are available. */
+    if (HAL_FDCAN_GetTxFifoFreeLevel(&hfdcan1) < IMU_CAN_FRAMES_PER_SAMPLE) {
+        can_tx_group_deferred_count++;
+        return 0U;
+    }
+
+    memcpy(shared_tx_data, &packet0X01, 8U);
+    const uint8_t p1_ok = send(PACKET1_CAN_ID, FDCAN_DLC_BYTES_8);
+
+    memcpy(shared_tx_data, &packet0X02, 8U);
+    const uint8_t p2_ok = send(PACKET2_CAN_ID, FDCAN_DLC_BYTES_8);
+
+    memcpy(shared_tx_data, &packet0X03, 5U);
+    const uint8_t p3_ok = send(PACKET3_CAN_ID, FDCAN_DLC_BYTES_5);
+
+    if (p1_ok != 0U && p2_ok != 0U && p3_ok != 0U) {
+        can_tx_group_ok_count++;
+        return 1U;
+    }
+
+    can_tx_group_partial_fail_count++;
+    return 0U;
 }
 
 void update_imu(void) {
     const uint32_t now = HAL_GetTick();
 
-    /* Do not enqueue another three-frame sample before the 2 ms period expires. */
-    if (now - last_send_tick < PACKET_PERIOD) {
+    /* The IMU itself may output at 1 kHz. Only forward a new sample every
+     * 2 ms, giving an effective CAN feedback rate of at most 500 Hz without
+     * blocking inside the UART interrupt callback. */
+    if ((uint32_t)(now - last_send_tick) < PACKET_PERIOD_MS) {
+        uart_rate_limited_count++;
         return;
     }
 
-    packet0X01.q0 = I2(buf+6+40);
-    packet0X01.q1 = I2(buf+6+42);
-    packet0X01.q2 = I2(buf+6+44);
-    packet0X01.q3 = I2(buf+6+46);
+    packet0X01.q0 = read_i16_le(buf + 6U + 40U);
+    packet0X01.q1 = read_i16_le(buf + 6U + 42U);
+    packet0X01.q2 = read_i16_le(buf + 6U + 44U);
+    packet0X01.q3 = read_i16_le(buf + 6U + 46U);
 
-    packet0X02.accx = I2(buf+6+16);
-    packet0X02.accy = I2(buf+6+18);
-    packet0X02.accz = I2(buf+6+20);
-    packet0X02.gyrox = I2(buf+6+10);
+    packet0X02.accx = read_i16_le(buf + 6U + 16U);
+    packet0X02.accy = read_i16_le(buf + 6U + 18U);
+    packet0X02.accz = read_i16_le(buf + 6U + 20U);
+    packet0X02.gyrox = read_i16_le(buf + 6U + 10U);
 
-    packet0X03.gyroy = I2(buf+6+12);
-    packet0X03.gyroz = I2(buf+6+14);
-    packet0X03.temperature = I1(buf+6+3);
+    packet0X03.gyroy = read_i16_le(buf + 6U + 12U);
+    packet0X03.gyroz = read_i16_le(buf + 6U + 14U);
+    packet0X03.temperature = (int8_t)buf[6U + 3U];
 
-    memcpy(shared_tx_data, &packet0X01, 8);
-    send(PACKET1_CAN_ID, 8);
-
-    memcpy(shared_tx_data, &packet0X02, 8);
-    send(PACKET2_CAN_ID, 8);
-
-    memcpy(shared_tx_data, &packet0X03, 5);
-    send(PACKET3_CAN_ID, 5);
-
-    /* Update the limiter only when a forwarding attempt is actually made. */
-    last_send_tick = now;
+    /* Only advance the 500 Hz limiter when the complete three-frame sample
+     * was accepted by the FDCAN Tx FIFO. */
+    if (enqueue_complete_can_sample() != 0U) {
+        last_send_tick = now;
+    }
 }
 
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
@@ -200,23 +317,27 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
         return;
     }
 
-    if (Size >= IMU_MIN_FRAME_SIZE && Size <= IMU_RX_BUFFER_SIZE) {
-        uart_frame_count++;
+    uart_rx_event_count++;
 
-        /* Parse first while DMA is stopped by ReceiveToIdle, then arm DMA again. */
-        update_imu();
-    } else {
-        uart_short_frame_count++;
-        memset(buf, 0, sizeof(buf));
+    /* HT normally does not stop DMA reception. If it ever occurs despite the
+     * explicit disable below, do not parse and do not restart DMA here. */
+    if (HAL_UARTEx_GetRxEventType(huart) == HAL_UART_RXEVENT_HT) {
+        uart_half_transfer_event_count++;
+        return;
     }
 
-    HAL_UARTEx_ReceiveToIdle_DMA(&huart2, buf, IMU_RX_BUFFER_SIZE);
+    if (validate_hi92_frame(Size) != 0U) {
+        uart_frame_count++;
+        update_imu();
+    }
+
+    start_imu_rx_dma();
 }
 
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART2) {
         memset(buf, 0, sizeof(buf));
-        HAL_UARTEx_ReceiveToIdle_DMA(&huart2, buf, IMU_RX_BUFFER_SIZE);
+        start_imu_rx_dma();
     }
 }
 
@@ -258,7 +379,7 @@ int main(void) {
     HAL_Delay(300);
     HAL_GPIO_WritePin(IMU_RST_GPIO_Port, IMU_RST_Pin, GPIO_PIN_RESET);
     HAL_Delay(500);
-    HAL_UARTEx_ReceiveToIdle_DMA(&huart2, buf, IMU_RX_BUFFER_SIZE);
+    start_imu_rx_dma();
     HAL_GPIO_WritePin(IMU_RST_GPIO_Port, IMU_RST_Pin, GPIO_PIN_SET);
     HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
     /* USER CODE END 2 */
