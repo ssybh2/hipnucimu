@@ -224,7 +224,23 @@ void can_filter_init(void) {
     HAL_FDCAN_Start(&hfdcan1);
 }
 
-uint8_t send(uint32_t packet_id, uint32_t data_length) {
+static void recover_can_if_bus_off(void) {
+    if (HAL_FDCAN_GetProtocolStatus(&hfdcan1, &status) != HAL_OK) {
+        return;
+    }
+
+    if (!status.BusOff) {
+        return;
+    }
+
+    can_busoff_recovery_count++;
+    HAL_FDCAN_DeactivateNotification(&hfdcan1, FDCAN_IT_RX_FIFO0_NEW_MESSAGE);
+    HAL_FDCAN_DeInit(&hfdcan1);
+    MX_FDCAN1_Init();
+    can_filter_init();
+}
+
+static uint8_t send(uint32_t packet_id, uint32_t data_length) {
     shared_tx_header.IdType = FDCAN_STANDARD_ID;
     shared_tx_header.TxFrameType = FDCAN_DATA_FRAME;
     shared_tx_header.DataLength = data_length;
@@ -241,15 +257,6 @@ uint8_t send(uint32_t packet_id, uint32_t data_length) {
     }
 
     can_tx_fail_count++;
-    HAL_FDCAN_GetProtocolStatus(&hfdcan1, &status);
-    if (status.BusOff) {
-        can_busoff_recovery_count++;
-        HAL_FDCAN_DeactivateNotification(&hfdcan1, FDCAN_IT_RX_FIFO0_NEW_MESSAGE);
-        HAL_FDCAN_DeInit(&hfdcan1);
-        MX_FDCAN1_Init();
-        can_filter_init();
-    }
-
     return 0U;
 }
 
@@ -263,21 +270,28 @@ static uint8_t enqueue_complete_can_sample(void) {
     }
 
     memcpy(shared_tx_data, &packet0X01, 8U);
-    const uint8_t p1_ok = send(PACKET1_CAN_ID, FDCAN_DLC_BYTES_8);
-
-    memcpy(shared_tx_data, &packet0X02, 8U);
-    const uint8_t p2_ok = send(PACKET2_CAN_ID, FDCAN_DLC_BYTES_8);
-
-    memcpy(shared_tx_data, &packet0X03, 5U);
-    const uint8_t p3_ok = send(PACKET3_CAN_ID, FDCAN_DLC_BYTES_5);
-
-    if (p1_ok != 0U && p2_ok != 0U && p3_ok != 0U) {
-        can_tx_group_ok_count++;
-        return 1U;
+    if (send(PACKET1_CAN_ID, FDCAN_DLC_BYTES_8) == 0U) {
+        can_tx_group_partial_fail_count++;
+        recover_can_if_bus_off();
+        return 0U;
     }
 
-    can_tx_group_partial_fail_count++;
-    return 0U;
+    memcpy(shared_tx_data, &packet0X02, 8U);
+    if (send(PACKET2_CAN_ID, FDCAN_DLC_BYTES_8) == 0U) {
+        can_tx_group_partial_fail_count++;
+        recover_can_if_bus_off();
+        return 0U;
+    }
+
+    memcpy(shared_tx_data, &packet0X03, 5U);
+    if (send(PACKET3_CAN_ID, FDCAN_DLC_BYTES_5) == 0U) {
+        can_tx_group_partial_fail_count++;
+        recover_can_if_bus_off();
+        return 0U;
+    }
+
+    can_tx_group_ok_count++;
+    return 1U;
 }
 
 void update_imu(void) {
@@ -475,7 +489,7 @@ void Error_Handler(void) {
 
 #ifdef  USE_FULL_ASSERT
 /**
-  * @brief  Reports the name of the source file and the source line number
+  * @brief  Reports the name of the source file name and the source line number
   *         where the assert_param error has occurred.
   * @param  file: pointer to the source file name
   * @param  line: assert error line number
