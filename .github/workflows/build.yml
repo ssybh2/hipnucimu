@@ -1,5 +1,6 @@
 name: Build 6-IMU Firmware
 
+# CI trigger after enabling Actions on this fork.
 on:
   push:
     branches:
