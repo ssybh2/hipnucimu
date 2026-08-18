@@ -21,7 +21,6 @@ set(CMAKE_C_STANDARD 11)
 #Uncomment for hardware floating point
 #add_compile_definitions(ARM_MATH_CM4;ARM_MATH_MATRIX_CHECK;ARM_MATH_ROUNDING)
 #add_compile_options(-mfloat-abi=hard -mfpu=fpv4-sp-d16)
-#add_link_options(-mfloat-abi=hard -mfpu=fpv4-sp-d16)
 
 #Uncomment for software floating point
 #add_compile_options(-mfloat-abi=soft)
@@ -57,17 +56,31 @@ file(GLOB_RECURSE SOURCES "Core/*.*" "Drivers/*.*")
 
 set(LINKER_SCRIPT ${CMAKE_SOURCE_DIR}/STM32G431CBTX_FLASH.ld)
 
-add_link_options(-Wl,-gc-sections,--print-memory-usage,-Map=${PROJECT_BINARY_DIR}/${PROJECT_NAME}.map)
+add_link_options(-Wl,-gc-sections,--print-memory-usage)
 add_link_options(-mcpu=cortex-m4 -mthumb -mthumb-interwork)
 add_link_options(-T ${LINKER_SCRIPT})
 
-add_executable(${PROJECT_NAME}.elf ${SOURCES} ${LINKER_SCRIPT})
+function(add_hipnuc_slot TARGET_NAME SLOT OUTPUT_NAME)
+    add_executable(${TARGET_NAME} ${SOURCES} ${LINKER_SCRIPT})
+    target_compile_definitions(${TARGET_NAME} PRIVATE HIPNUC_IMU_SLOT=${SLOT})
+    target_link_options(${TARGET_NAME} PRIVATE -Wl,-Map=${PROJECT_BINARY_DIR}/${OUTPUT_NAME}.map)
 
-set(HEX_FILE ${PROJECT_BINARY_DIR}/${PROJECT_NAME}.hex)
-set(BIN_FILE ${PROJECT_BINARY_DIR}/${PROJECT_NAME}.bin)
+    set(HEX_FILE ${PROJECT_BINARY_DIR}/${OUTPUT_NAME}.hex)
+    set(BIN_FILE ${PROJECT_BINARY_DIR}/${OUTPUT_NAME}.bin)
 
-add_custom_command(TARGET ${PROJECT_NAME}.elf POST_BUILD
-        COMMAND ${CMAKE_OBJCOPY} -Oihex $<TARGET_FILE:${PROJECT_NAME}.elf> ${HEX_FILE}
-        COMMAND ${CMAKE_OBJCOPY} -Obinary $<TARGET_FILE:${PROJECT_NAME}.elf> ${BIN_FILE}
-        COMMENT "Building ${HEX_FILE}
-Building ${BIN_FILE}")
+    add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
+            COMMAND ${CMAKE_OBJCOPY} -Oihex $<TARGET_FILE:${TARGET_NAME}> ${HEX_FILE}
+            COMMAND ${CMAKE_OBJCOPY} -Obinary $<TARGET_FILE:${TARGET_NAME}> ${BIN_FILE}
+            COMMENT "Building ${HEX_FILE}\nBuilding ${BIN_FILE}")
+endfunction()
+
+# Backwards-compatible default target: Slot 1 (CAN IDs 0x01/0x02/0x03)
+add_hipnuc_slot(hipnucimu.elf 1 hipnucimu_slot1)
+
+# Additional firmware images for the other two IMUs on the same CAN bus.
+add_hipnuc_slot(hipnucimu_slot2.elf 2 hipnucimu_slot2)
+add_hipnuc_slot(hipnucimu_slot3.elf 3 hipnucimu_slot3)
+
+# Convenience target that builds all three reusable firmware images.
+add_custom_target(hipnucimu_all_slots ALL
+    DEPENDS hipnucimu.elf hipnucimu_slot2.elf hipnucimu_slot3.elf)
