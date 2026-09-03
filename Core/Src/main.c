@@ -78,8 +78,8 @@
 #error "HIPNUC_IMU_SLOT must be 1, 2 or 3"
 #endif
 
-/* Effective forwarding period: 2 ms = 500 Hz. */
-#define PACKET_PERIOD_MS 2U
+/* Effective forwarding period: 3 ms = 333.33 Hz. */
+#define PACKET_PERIOD_MS 3U
 
 /* HiPNUC binary frame outer format: SOF(2) + LEN(2) + CRC(2) + payload. */
 #define HIPNUC_SOF0 0x5AU
@@ -298,7 +298,7 @@ void update_imu(void) {
     const uint32_t now = HAL_GetTick();
 
     /* The IMU itself may output at 1 kHz. Only forward a new sample every
-     * 2 ms, giving an effective CAN feedback rate of at most 500 Hz without
+     * 3 ms, giving an effective CAN feedback rate of at most 333.33 Hz without
      * blocking inside the UART interrupt callback. */
     if ((uint32_t)(now - last_send_tick) < PACKET_PERIOD_MS) {
         uart_rate_limited_count++;
@@ -319,7 +319,7 @@ void update_imu(void) {
     packet0X03.gyroz = read_i16_le(buf + 6U + 14U);
     packet0X03.temperature = (int8_t)buf[6U + 3U];
 
-    /* Only advance the 500 Hz limiter when the complete three-frame sample
+    /* Only advance the 333.33 Hz limiter when the complete three-frame sample
      * was accepted by the FDCAN Tx FIFO. */
     if (enqueue_complete_can_sample() != 0U) {
         last_send_tick = now;
