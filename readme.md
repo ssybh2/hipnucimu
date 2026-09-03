@@ -1,13 +1,14 @@
-# HIPNUC ch0x0 series imu forward board
+# HIPNUC ch0x0 series IMU forward board
 
-This board will receive ch0x0 imu data through UART and then forward it into the CAN network using three packets.
+This board receives CH0X0 IMU data through UART and forwards it to CAN using three Classic CAN packets per logical IMU sample.
 
-The **baud rate** of the CH0X0 IMU is **921600**, using **Hi92** protocol at **1 kHz**.
+The CH0X0 IMU UART side remains configured at **921600 baud**, using the **Hi92** protocol at up to **1 kHz**. On branch `feature/6imu-333hz-stable`, the STM32G431 forwarding board rate-limits CAN output to one complete three-frame sample every **3 ms**, i.e. approximately **333.33 Hz per IMU**.
 
-If the board is not working, use the **CHCenter Tool** (the version in the repo, do **not** update) to check the
-settings of HIPNUC CH0X0 IMU through your USB2UART converter first!
+This branch is intended for the 6-IMU EtherCAT setup as a lower-load A/B alternative to `feature/6imu-500hz-stable`.
 
-The forward result includes three packets, two packets of length 8, 1 packet of length 5, defined as follows:
+## CAN packet layout
+
+Each logical IMU sample is forwarded as exactly three Classic CAN frames:
 
 ```c++
 struct packet1_t {
@@ -31,15 +32,39 @@ struct packet3_t {
 } __attribute__((packed));
 ```
 
-To change the packet ID of these three packets, nav to `Core/Src/main.c`, modify the lines 49-51 as follows:
+## Three firmware slots
 
-```c++
-#define PACKET1_CAN_ID 0x01
-#define PACKET2_CAN_ID 0x02
-#define PACKET3_CAN_ID 0x03
+The build generates three reusable firmware images. CAN1 and CAN2 are independent buses, so the same three slot IDs can be reused on both buses:
+
+- **Slot 1:** `0x01 / 0x02 / 0x03`
+- **Slot 2:** `0x04 / 0x05 / 0x06`
+- **Slot 3:** `0x07 / 0x08 / 0x09`
+
+For a six-IMU setup, flash one Slot 1, one Slot 2, and one Slot 3 G431 board on CAN1, then repeat the same three slot firmwares on CAN2.
+
+## 333 Hz forwarding behavior
+
+The rate limiter is defined in `Core/Src/main.c`:
+
+```c
+#define PACKET_PERIOD_MS 3U
 ```
 
-Original document available resources can be found [here](https://www.hipnuc.com/resource_ch0x0.html).
+The G431 only advances this limiter after all three CAN frames for a logical sample have been accepted by the FDCAN TX FIFO. The HiPNUC sensor may still deliver UART frames faster than 333 Hz; excess frames are intentionally not forwarded to CAN.
 
-You can find our pre-built artifact `.elf` firmware file under the action
-page [here](https://github.com/AIMEtherCAT/hipnucimu/actions), the packet ID is `0x01`, `0x02`, and `0x03`.
+## GitHub Actions firmware artifacts
+
+GitHub Actions builds all three slots and publishes the artifact:
+
+`hipnucimu-333hz-slots`
+
+The artifact contains:
+
+- `hipnucimu.elf` — Slot 1
+- `hipnucimu_slot1.hex` / `hipnucimu_slot1.bin` — Slot 1
+- `hipnucimu_slot2.elf` / `.hex` / `.bin` — Slot 2
+- `hipnucimu_slot3.elf` / `.hex` / `.bin` — Slot 3
+
+Repository Actions page: https://github.com/ssybh2/hipnucimu/actions
+
+If the board is not working, use the CHCenter Tool version included in this repository to check the HIPNUC CH0X0 configuration through a USB-to-UART converter before changing firmware parameters.
