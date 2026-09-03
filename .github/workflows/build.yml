@@ -39,11 +39,14 @@ jobs:
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: hipnucimu-500hz-slots
+          name: ${{ github.ref_name == 'feature/6imu-333hz-stable' && 'hipnucimu-333hz-slots' || 'hipnucimu-500hz-slots' }}
           path: |
+            ${{ github.workspace }}/build/Release/hipnucimu.elf
             ${{ github.workspace }}/build/Release/hipnucimu_slot1.hex
             ${{ github.workspace }}/build/Release/hipnucimu_slot1.bin
+            ${{ github.workspace }}/build/Release/hipnucimu_slot2.elf
             ${{ github.workspace }}/build/Release/hipnucimu_slot2.hex
             ${{ github.workspace }}/build/Release/hipnucimu_slot2.bin
+            ${{ github.workspace }}/build/Release/hipnucimu_slot3.elf
             ${{ github.workspace }}/build/Release/hipnucimu_slot3.hex
             ${{ github.workspace }}/build/Release/hipnucimu_slot3.bin
