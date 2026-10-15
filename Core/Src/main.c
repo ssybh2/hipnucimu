@@ -46,9 +46,9 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
-#define PACKET1_CAN_ID 0x01
-#define PACKET2_CAN_ID 0x02
-#define PACKET3_CAN_ID 0x03
+#define PACKET1_CAN_ID 0x04
+#define PACKET2_CAN_ID 0x05
+#define PACKET3_CAN_ID 0x06
 #define PACKET_PERIOD 1
 /* USER CODE END PV */
 
@@ -208,6 +208,7 @@ int main(void) {
         /* USER CODE END WHILE */
 
         /* USER CODE BEGIN 3 */
+        HAL_Delay(2);
     }
     /* USER CODE END 3 */
 }
